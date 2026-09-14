@@ -1,4 +1,4 @@
-<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>حجز البرايفت — Wave Club</title><style>
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>حجز البرايفت — Wave Club</title><link rel="manifest" href="./manifest.json"><link rel="apple-touch-icon" href="./icon-192.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="theme-color" content="#0ea5e9"><style>
 :root{--ink:#0d3438;--teal:#0b5961;--line:#dce8e7;--soft:#f4f9f8;--accent:#1594a0;--danger:#c94d47;--ok:#16845b;--shadow:0 12px 35px rgba(13,52,56,.10)}
 *{box-sizing:border-box}html,body{margin:0;padding:0;background:linear-gradient(180deg,#f3f8f7 0,#fff 45%);color:var(--ink);font-family:Arial,"Tahoma",sans-serif}body{min-height:100vh}.wrap{max-width:1050px;margin:0 auto;padding:18px 14px 55px}
 .top{background:#fff;border:1px solid #e6eeee;border-radius:24px;padding:14px 18px;box-shadow:var(--shadow);display:flex;align-items:center;gap:15px;justify-content:space-between;flex-wrap:wrap}.brand{display:flex;align-items:center;gap:12px}.brand img{width:62px;height:62px;object-fit:contain;border-radius:14px}.brand h1{font-size:24px;margin:0 0 4px}.brand p{margin:0;color:#698080;font-size:13px}.today{background:#eaf7f6;border:1px solid #cce8e6;border-radius:999px;padding:9px 13px;font-weight:800}
@@ -343,7 +343,8 @@ renderHeader(); syncModeUI(); loadAvailability(); setInterval(()=>loadAvailabili
 </script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
-import { getMessaging, isSupported, onMessage, onRegistered, onUnregistered, register } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-messaging.js";
+import { getMessaging, getToken, deleteToken, isSupported, onMessage }
+  from "https://www.gstatic.com/firebasejs/12.19.0/firebase-messaging.js";
 
 const waveFirebaseConfig = {
   apiKey: "AIzaSyARqz_WHes4OdCDHSx14FAAkgNloTOSF7Y",
@@ -356,105 +357,124 @@ const waveFirebaseConfig = {
 };
 const WAVE_VAPID_KEY = "BCR6EyQAINhixBH2PFSi9dTV5IdQrqCQGwVaeatn-4zAQERaKT1CgSUhP5ZVQQ75Tw5OadJorOphSFDCstEM2YQ";
 
-let waveMessaging = null;
-let wavePushBound = false;
-let wavePushRole = "client";
+let waveApp = null, waveMessaging = null;
 
-function waveSetNotifyButton(text, disabled=false) {
+function setNotifyBtn(text, disabled = false) {
   const b = document.getElementById("notifyBtn");
   if (b) { b.textContent = text; b.disabled = !!disabled; }
 }
 
-async function waveRegisterPush(role="client") {
-  wavePushRole = role === "admin" ? "admin" : "client";
-  if (!("Notification" in window) || !("serviceWorker" in navigator)) {
-    throw new Error("المتصفح لا يدعم إشعارات Push المطلوبة.");
+function isStandalone() {
+  return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+function isIOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+         (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+/**
+ * يسجّل الجهاز ويرجّع الـ FCM token.
+ * role: "client" أو "admin"
+ * phone: رقم موبايل الكابتن (اختياري) — بيتستخدم عشان نبعتله إشعار حجزه هو بالذات
+ */
+async function waveRegisterPush(role = "client", phone = "") {
+  if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+    if (isIOS() && !isStandalone()) {
+      throw new Error("على الآيفون لازم تضيف الموقع للشاشة الرئيسية الأول (Share ← Add to Home Screen) وبعدين تفتحه وتفعّل الإشعارات.");
+    }
+    throw new Error("المتصفح لا يدعم إشعارات Push.");
   }
-  if (!(await isSupported())) {
-    throw new Error("هذا المتصفح لا يدعم Firebase Web Push على هذا الجهاز.");
+  if (isIOS() && !isStandalone()) {
+    throw new Error("على الآيفون: Share ← Add to Home Screen، افتح الأيقونة وبعدين فعّل الإشعارات.");
   }
+  if (!(await isSupported())) throw new Error("هذا المتصفح لا يدعم Firebase Web Push.");
 
   const permission = await Notification.requestPermission();
-  if (permission !== "granted") {
-    throw new Error("تم رفض إذن الإشعارات من المتصفح.");
-  }
+  if (permission !== "granted") throw new Error("تم رفض إذن الإشعارات من المتصفح.");
 
   const sw = await navigator.serviceWorker.register("./firebase-messaging-sw.js", { scope: "./" });
-  if (!waveMessaging) {
-    const app = initializeApp(waveFirebaseConfig);
-    waveMessaging = getMessaging(app);
+  await navigator.serviceWorker.ready;
 
-    window.waveFcmRegistrationPromise = new Promise((resolve) => {
-      onRegistered(waveMessaging, async (fid) => {
-        try {
-          window.waveClubFcmFid = fid;
-          localStorage.setItem("waveClubFcmFid", fid);
-          localStorage.setItem("waveClubFcmPushRole", wavePushRole);
-          const result = await window.jsonp("savefcm", { fid, role: wavePushRole });
-          if (!result || !result.ok) throw new Error((result && result.error) || "تعذر حفظ تسجيل الإشعارات");
-          resolve({ok:true, fid});
-          waveSetNotifyButton("🔔 الإشعارات مفعّلة");
-        } catch (err) {
-          console.error("FCM registration save failed", err);
-          resolve({ok:false, error: err.message || String(err)});
-        }
-      });
-    });
+  if (!waveApp) {
+    waveApp = initializeApp(waveFirebaseConfig);
+    waveMessaging = getMessaging(waveApp);
 
-    onUnregistered(waveMessaging, async (fid) => {
-      try {
-        await window.jsonp("removefcm", { fid });
-      } catch (err) {
-        console.warn("FCM unregister sync failed", err);
-      }
-    });
-
-    onMessage(waveMessaging, (payload) => {
-      const n = payload && payload.notification ? payload.notification : {};
-      if (Notification.permission === "granted") {
-        try {
-          new Notification(n.title || "Wave Club", {
-            body: n.body || "لديك إشعار جديد من Wave Club",
-            icon: "./icon-192.png"
-          });
-        } catch (e) {}
+    // رسائل وصلت والصفحة مفتوحة قدامك
+    onMessage(waveMessaging, async (payload) => {
+      const d = payload?.data || {};
+      const n = payload?.notification || {};
+      const reg = await navigator.serviceWorker.getRegistration("./");
+      const title = n.title || d.title || "Wave Club";
+      const opts = {
+        body: n.body || d.body || "لديك إشعار جديد",
+        icon: "./icon-192.png",
+        badge: "./icon-192.png",
+        tag: d.tag || "wave-generic",
+        renotify: true,
+        data: { url: d.url || location.href }
+      };
+      if (reg) reg.showNotification(title, opts);
+      else try { new Notification(title, opts); } catch (e) {}
+      // حدّث الشاشة لو الإشعار عن حجز جديد
+      if (d.type === "booking" && typeof window.loadAvailability === "function") {
+        window.loadAvailability(true);
       }
     });
   }
 
-  await register(waveMessaging, {
+  const token = await getToken(waveMessaging, {
     vapidKey: WAVE_VAPID_KEY,
     serviceWorkerRegistration: sw
   });
+  if (!token) throw new Error("Firebase لم يُصدر توكن الإشعارات.");
 
-  const registrationResult = await window.waveFcmRegistrationPromise;
-  if (!registrationResult || !registrationResult.ok) {
-    throw new Error((registrationResult && registrationResult.error) || "Firebase لم يكمل تسجيل الإشعارات.");
-  }
-  waveSetNotifyButton("🔔 الإشعارات مفعّلة");
-  return true;
+  localStorage.setItem("waveFcmToken", token);
+  localStorage.setItem("waveFcmRole", role);
+  window.waveFcmToken = token;
+
+  const result = await window.jsonp("savefcm", {
+    token,
+    role: role === "admin" ? "admin" : "client",
+    phone: phone || localStorage.getItem("waveCaptainPhone") || "",
+    ua: navigator.userAgent.slice(0, 120)
+  });
+  if (!result || !result.ok) throw new Error(result?.error || "تعذر حفظ تسجيل الإشعارات على السيرفر.");
+
+  setNotifyBtn("🔔 الإشعارات مفعّلة");
+  return token;
+}
+
+async function waveDisablePush() {
+  const token = localStorage.getItem("waveFcmToken");
+  try { if (waveMessaging) await deleteToken(waveMessaging); } catch (e) {}
+  if (token) { try { await window.jsonp("removefcm", { token }); } catch (e) {} }
+  localStorage.removeItem("waveFcmToken");
+  setNotifyBtn("🔔 تفعيل الإشعارات");
 }
 
 window.waveEnablePush = waveRegisterPush;
-window.waveClubFcmFid = localStorage.getItem("waveClubFcmFid") || "";
+window.waveDisablePush = waveDisablePush;
+window.waveFcmToken = localStorage.getItem("waveFcmToken") || "";
 
 document.addEventListener("DOMContentLoaded", () => {
   const b = document.getElementById("notifyBtn");
   if (!b) return;
-  const savedPermission = ("Notification" in window) ? Notification.permission : "default";
-  if (savedPermission === "granted" && window.waveClubFcmFid) {
-    b.textContent = "🔔 الإشعارات مفعّلة";
+  const perm = ("Notification" in window) ? Notification.permission : "default";
+  if (perm === "granted" && window.waveFcmToken) {
+    setNotifyBtn("🔔 الإشعارات مفعّلة");
+    // تجديد التوكن بهدوء كل ما الصفحة تتفتح (التوكن بيتغيّر من وقت للتاني)
+    waveRegisterPush(localStorage.getItem("waveFcmRole") || "client").catch(() => {});
   }
   b.addEventListener("click", async () => {
-    waveSetNotifyButton("جاري تفعيل الإشعارات…", true);
+    if (b.textContent.includes("مفعّلة")) return;
+    setNotifyBtn("جاري تفعيل الإشعارات…", true);
     try {
-      await waveRegisterPush("client");
-      b.textContent = "🔔 الإشعارات مفعّلة";
+      await waveRegisterPush("client", document.getElementById("captainPhone")?.value || "");
     } catch (err) {
-      b.disabled = false;
-      b.textContent = "🔔 تفعيل الإشعارات";
+      setNotifyBtn("🔔 تفعيل الإشعارات", false);
       const s = document.getElementById("status");
       if (s) { s.className = "status err"; s.textContent = err.message || "تعذر تفعيل الإشعارات."; }
+      else alert(err.message || "تعذر تفعيل الإشعارات.");
     }
   });
 });

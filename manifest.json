@@ -1,0 +1,17 @@
+{
+  "name": "Wave Club — حجز البرايفت",
+  "short_name": "Wave Booking",
+  "start_url": "/wave-private-booking/",
+  "scope": "/wave-private-booking/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1220",
+  "theme_color": "#0ea5e9",
+  "lang": "ar",
+  "dir": "rtl",
+  "icons": [
+    { "src": "/wave-private-booking/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/wave-private-booking/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/wave-private-booking/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
